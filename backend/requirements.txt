@@ -1,0 +1,3 @@
+fastapi # Our backend framework
+uvicorn # server that runs the application
+python-dotenv # for loading environment variables from a .env file
