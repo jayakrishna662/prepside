@@ -1,3 +1,21 @@
 fastapi # Our backend framework
 uvicorn # server that runs the application
 python-dotenv # for loading environment variables from a .env file
+pinecone # pinecone is the Python SDK that allows our Python/FastAPI application to communicate with Pinecone.
+
+SQLAlchemy # helps Python communicate with PostgreSQL using Python code. (ORM)
+psycopg[binary]	#Connects Python to PostgreSQL
+
+
+python-multipart	#Lets FastAPI receive uploaded files
+pgvector	#Lets us store embeddings in PostgreSQL
+pymupdf	#Reads text from PDFs page by page
+
+langchain-text-splitters	#Splits text into chunks
+langchain-google-genai	# Connects LangChain to the Google GenAI API
+
+pytest	# Runs our tests
+
+sentence-transformers	# Runs the free embedding model on your laptop
+
+pydantic-settings
