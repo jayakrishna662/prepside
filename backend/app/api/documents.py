@@ -1,53 +1,78 @@
 import hashlib
+import logging
 import os
 import uuid
 
-import logging
-
+# Create a logger object for this file
+# When a message gets logged, the log line can show which file it came from.
+# This makes debugging much easier:
 logger = logging.getLogger(__name__)
 
+from urllib.parse import quote
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from sqlalchemy import desc, select
-from app.api.schemas import DocumentOut
-
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
-
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user_id
+from app.api.schemas import DocumentOut
 from app.core.config import settings
 from app.db.models import Chunk, Document
 from app.db.session import get_db
 from app.services.ingestion import ingest_document_queued
 from app.services.storage import get_storage
 
-from urllib.parse import quote
-
-from fastapi import Response
-
+# Create a router that holds a set of endpoints
+# Every endpoint on this router automatically gets /documents added to the front of its URL.
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-@router.post("", status_code=202)
-def upload_document(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user_id: uuid.UUID = Depends(get_current_user_id),
-):
-    max_bytes = settings.max_upload_mb * 1024 * 1024
-    data = file.file.read(max_bytes + 1)
 
+# “When someone sends a POST request to /documents, run the function below. 
+# Reply with status 202, which means ‘accepted, still working on it’.”
+@router.post("", status_code=202)
+
+# This code is a “Upload PDF” button on the server side.
+# When a user sends a PDF file, the server: 
+# i) Checks the file is OK (not too big, really a PDF, not a duplicate)
+# ii) Saves it, records it in DB, Starts processing it in background.
+
+def upload_document(
+    background_tasks: BackgroundTasks, # A helper from FastAPI that lets us run slow jobs after replying to the user.
+    file: UploadFile = File(...), # The uploaded file itself. The ... means it is required.
+    db: Session = Depends(get_db), # Gives us a database connection to read and write data.
+    user_id: uuid.UUID = Depends(get_current_user_id), # Finds out who is logged in and gives us their ID.
+):
+    max_bytes = settings.max_upload_mb * 1024 * 1024 # Converts the size limit from MB to bytes (for example, 10 MB becomes 10,485,760 bytes).
+    data = file.file.read(max_bytes + 1) # Reads the file into memory, but only up to the limit plus one byte. That one extra byte is just a test: if we got it, the file is too big.
+
+    # i) Check the PDF SIZE
     if len(data) > max_bytes:
         raise HTTPException(413, f"File is larger than {settings.max_upload_mb} MB")
-    if not data.startswith(b"%PDF"):
+    # ii) Check if its a PDF 
+    # Every real PDF begins with the characters %PDF. If this file doesn’t, stop with error 400 (“bad request”).
+    if not data.startswith(b"%PDF"):  
         raise HTTPException(400, "Only PDF files are supported")
 
+    # iii) Check for duplicates 
+    # Calculates a SHA-256 hash to detect duplicate uploads for the same user.
     file_hash = hashlib.sha256(data).hexdigest()
+
+    # Asks the database: “Has this user already uploaded a file with this file_hash?”
     existing = db.scalar(
         select(Document).where(
             Document.user_id == user_id, Document.file_hash == file_hash
         )
     )
+    # If yes, stop with error 409 (“conflict”) and tell them which document already exists.
     if existing:
         raise HTTPException(
             409,
@@ -56,11 +81,16 @@ def upload_document(
                 "document_id": str(existing.id),
             },
         )
-
+    # iv) Save the File 
+    # Generates a unique document ID for new document
     doc_id = uuid.uuid4()
+    # Builds the storage location, like user123/abc456.pdf. Each user gets their own folder.
     path = f"{user_id}/{doc_id}.pdf"
+
+    # Actually saves the file at that location (Storage location is defines in app/services/storage.py )
     get_storage().save(path, data)
 
+    # v) Save to Database to create a record
     doc = Document(
         id=doc_id,
         user_id=user_id,
@@ -69,10 +99,14 @@ def upload_document(
         file_hash=file_hash,
         file_size=len(data),
     )
+    # add puts the record in line to be saved. commit actually writes it to the database.
     db.add(doc)
     db.commit()
 
+    # Schedules ingest_document_queued() as a background task.
     background_tasks.add_task(ingest_document_queued, doc_id)
+
+    # Returns the document ID and its initial status(Uploaded)
     return {"id": str(doc_id), "status": doc.status}
 
 
