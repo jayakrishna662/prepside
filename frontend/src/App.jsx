@@ -105,10 +105,11 @@ export default function App() {
 
 
         <h2>Ask your documents</h2>
-        <ChatPanel   // current chat window
-          conversationId={activeConversation}  // displays the selected chat in the conversation list
-          onConversationChange={setActiveConversation} // create new conversation when clicked new chat  ChatPanel uses this to tell App “the active chat is now this new one,” so the app and the left list stay in sync.
-          onAnswered={refreshConversations} //Refreshes the conversation list after an answer, so the list can show the latest conversation data.
+        <ChatPanel
+          key={activeConversation ?? "new"} // Resets ChatPanel when you switch to another chat.so messages and errors from Chat A don't remain in Chat B.
+          conversationId={activeConversation} // Tells ChatPanel which conversation is currently selected.
+          onConversationChange={setActiveConversation} // Updates the selected chat.
+          onAnswered={refreshConversations} // Refreshes the conversation list after an answer is received, so the sidebar can show updated information.
         />
       </main>
     </div>

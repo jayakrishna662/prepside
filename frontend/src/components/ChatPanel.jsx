@@ -12,6 +12,7 @@ export default function ChatPanel({ conversationId, onConversationChange , onAns
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const visibleMessages = conversationId ? messages : [];
 
   const bottomRef = useRef(null);
   const activeRef = useRef(conversationId);
@@ -19,10 +20,7 @@ export default function ChatPanel({ conversationId, onConversationChange , onAns
 
   useEffect(() => {
     activeRef.current = conversationId;
-    setError("");
-
     if (!conversationId) {
-      setMessages([]);
       return;
     }
     // A chat we just created has nothing to load yet
@@ -35,10 +33,10 @@ export default function ChatPanel({ conversationId, onConversationChange , onAns
       .catch((e) => setError(e.message));
   }, [conversationId]);
 
-  useEffect(() => {
-    if (messages.length === 0 && !sending) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, sending]);
+ useEffect(() => {
+  if (!conversationId || (messages.length === 0 && !sending)) return;
+  bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+}, [conversationId, messages, sending]);
 
   
   async function send() {
@@ -80,11 +78,11 @@ export default function ChatPanel({ conversationId, onConversationChange , onAns
   return (
     <div className="chat">
       <div className="chat-messages">
-        {messages.length === 0 && (
+        {visibleMessages.length === 0 && (
           <p className="muted">Ask a question about your documents.</p>
         )}
 
-        {messages.map((m) => (
+        {visibleMessages.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
             <div className={`bubble ${m.found === false ? "notfound" : ""}`}>
               {m.content}
