@@ -1,18 +1,22 @@
+# The visuals.py file identifies PDF pages that may contain charts, diagrams, or other visuals, 
+# then converts selected pages into PNG images
+#  so the application can analyze their visual content using Gemini.
 from dataclasses import dataclass
 
 import pymupdf
 
-MIN_DRAWINGS = 10  # a chart or flowchart is made of many small shapes
+MIN_DRAWINGS = 10  # Sets the minimum number of drawings a page should contain to be considered meaningful visual
 MIN_IMAGE_SIZE = 50  # points; smaller images (logos, icons) are ignored
 
 
+# Holds the details of one page that has visuals
 @dataclass
 class VisualPage:
     page: int
     images: int
     drawings: int
 
-
+# identifies pages that contain sufficiently large images or many drawings.
 def find_visual_pages(data: bytes) -> list[VisualPage]:
     pages: list[VisualPage] = []
 
@@ -26,6 +30,8 @@ def find_visual_pages(data: bytes) -> list[VisualPage]:
 
             drawings = len(page.get_drawings())
 
+            # if a page contains images or 
+            # If a page contains >= MIN_DRAWINGS, it qualifies for further visual processing.
             if images > 0 or drawings >= MIN_DRAWINGS:
                 pages.append(VisualPage(number, images, drawings))
 
@@ -35,7 +41,7 @@ def find_visual_pages(data: bytes) -> list[VisualPage]:
 RENDER_DPI = 220  # starting value; higher means a sharper picture but more tokens for Gemini
 MAX_SIDE_PX = 2600  # safety limit so a huge page cannot use too much memory
 
-
+# turns the chosen PDF pages into PNG images,
 def iter_page_pngs(data: bytes, page_numbers: list[int]):
     """Yield (page_number, png_bytes) for each requested page (page numbers start at 1)."""
     with pymupdf.open(stream=data, filetype="pdf") as doc:

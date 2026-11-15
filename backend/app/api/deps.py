@@ -1,3 +1,6 @@
+# deps is short form of dependencies
+# this file holds resuable dependency functions
+
 import uuid
 
 TEMP_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")

@@ -1,3 +1,7 @@
+# The vision.py file uses llm's vision capabilities to analyze charts, diagrams, flowcharts,
+# and images in PDF pages, convert their visual content into text descriptions,
+# and save the page images for later reference.
+
 import base64
 import logging
 import time
@@ -52,7 +56,8 @@ class VisualChunk:
     content: str
     asset_path: str
 
-
+# send a PDF page image to llm, ask it to describe the visuals on that page,
+# and return the descriptions as structured data.
 def describe_page(png: bytes) -> list[VisualItem]:
     encoded = base64.b64encode(png).decode("ascii")
     message = HumanMessage(
@@ -65,6 +70,7 @@ def describe_page(png: bytes) -> list[VisualItem]:
     return result.items if result else []
 
 
+# It asks llm to describe a page(By calling describe_page function), and if the call fails, it tries again (up to 4 times in total).
 def _describe_with_retry(png: bytes, page: int) -> list[VisualItem] | None:
     for attempt in range(MAX_RETRIES):
         try:
@@ -77,6 +83,9 @@ def _describe_with_retry(png: bytes, page: int) -> list[VisualItem] | None:
     return None
 
 
+
+# Coordinates the entire process. It finds pages with visuals, converts them to images,
+# calls _describe_with_retry(), saves the images, and collects the descriptions into VisualChunk objects.
 def build_visual_chunks(
     data: bytes,
     user_id: uuid.UUID,

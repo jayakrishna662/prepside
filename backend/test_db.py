@@ -1,3 +1,7 @@
+# test_db.py checks whether your application can connect to Supabase and 
+# whether the PostgreSQL vector extension is enabled.
+
+
 # i) Create a new project in supabase with name prepside 
 # ii) Go to sql editor and run: CREATE EXTENSION IF NOT EXISTS vector;
 #       This will create a new extension in the database and it Switch on the add-on that 
@@ -5,8 +9,8 @@
 # iii) Paste your credentials from supabse into .env and then run this file to test whether your code reaches supabase
 #      You should see [('vector',)]. It means your code reached Supabase and sees pgvector.
 
-from sqlalchemy import create_engine, text
 from app.core.config import settings
+from sqlalchemy import create_engine, text
 
 engine = create_engine(settings.database_url)
 

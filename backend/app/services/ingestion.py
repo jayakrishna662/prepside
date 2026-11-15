@@ -14,7 +14,8 @@ from app.services.vision import build_visual_chunks
 
 logger = logging.getLogger(__name__)
 
-
+# It updates a document’s status (like “processing”, “ready” or “failed”)
+# and can set extra fields(like error message when status is failed) at the same time, then saves to the database.
 def _set_status(db, doc: Document, status: str, **fields) -> None:
     doc.status = status
     for key, value in fields.items():
@@ -22,25 +23,34 @@ def _set_status(db, doc: Document, status: str, **fields) -> None:
     db.commit()
 
 
+# this function handles the complete document ingestion pipeline,
+# from downloading a PDF to storing its processed chunks and embeddings in the database.
 def ingest_document(document_id: uuid.UUID) -> None:
+    # Open our own database session (this runs in the background after upload)
     db = SessionLocal()
     try:
+        # Find the document; if it doesn't exist, stop
         doc = db.get(Document, document_id)
         if doc is None:
             return
 
         try:
+            # Step 1: Download the file from storage
             data = get_storage().download(doc.storage_path)
 
+             # Step 2: Read the pages and text from the file
             _set_status(db, doc, "parsing")
             pages, page_count = parse_pdf(data)
             doc.page_count = page_count
 
+            # Step 3: Split the text into small chunks
             _set_status(db, doc, "chunking")
             text_chunks = chunk_pages(pages)
 
+            # Step 4: Ask Gemini to describe charts, diagrams and images
             _set_status(db, doc, "describing", chunks_total=0, chunks_done=0)
 
+             # Saves progress after each page, so the UI can show a progress bar
             def on_visual_progress(done: int, total: int) -> None:
                 doc.chunks_total = total
                 doc.chunks_done = done
@@ -50,6 +60,7 @@ def ingest_document(document_id: uuid.UUID) -> None:
                 data, doc.user_id, doc.id, on_progress=on_visual_progress
             )
 
+            # Step 5: Put text chunks and visual chunks into one list
             # Each row: (chunk_index, page, content, kind, asset_path)
             rows = [(c.chunk_index, c.page, c.content, "text", None) for c in text_chunks]
             offset = len(rows)
@@ -58,14 +69,18 @@ def ingest_document(document_id: uuid.UUID) -> None:
                 for i, v in enumerate(visual_chunks)
             ]
 
+            # Step 6: Turn each chunk's text into a vector (embedding)
             _set_status(db, doc, "embedding", chunks_total=len(rows), chunks_done=0)
 
+            # Saves progress while embedding
             def on_progress(done: int) -> None:
                 doc.chunks_done = done
                 db.commit()
 
+            
             vectors = embed_texts([r[2] for r in rows], on_progress=on_progress)
 
+            # Step 7: Save the chunks and their vectors to the database
             _set_status(db, doc, "storing")
             db.execute(delete(Chunk).where(Chunk.document_id == doc.id))
             db.add_all(
@@ -81,6 +96,8 @@ def ingest_document(document_id: uuid.UUID) -> None:
                 )
                 for (index, page, content, kind, asset_path), vector in zip(rows, vectors)
             )
+
+            # Step 8: Done. The document can now be searched in chat
             _set_status(db, doc, "ready", error_message=None)
 
         except ValueError as e:
@@ -101,10 +118,11 @@ def ingest_document(document_id: uuid.UUID) -> None:
     finally:
         db.close()
 
-
+# creates a lock that prevents multiple threads from executing the protected section simultaneously.
 _INGEST_LOCK = threading.Lock()
 
-
+# t runs ingest_document, but only one document at a time. 
+# If other uploads arrive while one is being processed, they wait their turn.
 def ingest_document_queued(document_id: uuid.UUID) -> None:
     # Only one document is processed at a time, to stay under the rate limits
     with _INGEST_LOCK:

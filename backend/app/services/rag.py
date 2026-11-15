@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 
 NOT_FOUND_MESSAGE = "I couldn't find this in your documents."
 
-
+# defines the expected structure of the answer returned by the LLM.
 class LLMAnswer(BaseModel):
     found: bool
     answer: str
     sources: list[int]
 
-
+# This stores information about a source
 @dataclass
 class Citation:
     document_id: uuid.UUID
@@ -37,7 +37,7 @@ class Citation:
     page: int
     has_image: bool = False
 
-
+# This stores the final result produced by your RAG pipeline.
 @dataclass
 class Answer:
     answer: str
@@ -48,7 +48,7 @@ class Answer:
     mode: str = "search"
     images: int = 0
 
-
+# log important information about the RAG result and then return the answer.
 def _finish(question: str, answer: Answer) -> Answer:
     logger.info(
         "RAG question=%r mode=%s top_score=%.3f images=%d found=%s reason=%s",
@@ -61,11 +61,13 @@ def _finish(question: str, answer: Answer) -> Answer:
     )
     return answer
 
-
+# creates a standardized response for situations where the RAG pipeline cannot provide a supported answer.
 def _not_found(top_score: float, reason: str, mode: str = "search", images: int = 0) -> Answer:
     return Answer(NOT_FOUND_MESSAGE, False, [], top_score, reason, mode, images)
 
 
+# find relevant images among the retrieved chunks, load those images from storage,
+#  and prepare them to be sent to the LLM along with Question.
 def _page_images(chunks: list[RetrievedChunk]) -> list[tuple[int, int, bytes]]:
     """Page pictures to attach: (source id, page, png bytes).
 
@@ -90,6 +92,8 @@ def _page_images(chunks: list[RetrievedChunk]) -> list[tuple[int, int, bytes]]:
     return images
 
 
+# It builds the final message to send to the AI, which is the text prompt plus any page pictures.
+# If there are no images, it sends just the text.
 def _build_message(text: str, images: list[tuple[int, int, bytes]]) -> HumanMessage:
     if not images:
         return HumanMessage(content=text)
@@ -107,6 +111,11 @@ def _build_message(text: str, images: list[tuple[int, int, bytes]]) -> HumanMess
     return HumanMessage(content=parts)
 
 
+# main function of the RAG pipeline.
+# It takes a student’s question, finds the right chunks, asks the AI to answer from them,
+# and returns the answer with citations.
+# It calls the other pieces in order: retriever.py to find chunks, prompts.py to build the prompt,
+# the AI to answer, then the citation and not-found checks.
 def answer_question(
     db: Session,
     user_id: uuid.UUID,

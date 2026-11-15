@@ -1,3 +1,7 @@
+# Retrieves relevant document chunks using vector, keyword, or hybrid search. 
+# It can also retrieve all chunks from a document when the user asks for a summary or 
+# information about the entire document and then passes the retrieved content to the RAG pipeline for answer generation
+
 import re
 import uuid
 from dataclasses import dataclass
@@ -9,6 +13,8 @@ from app.db.models import Chunk, Document
 from app.services.embedder import embed_query
 
 
+# RetrievedChunk is a data structure that stores one chunk retrieved from a document,
+# along with its search scores and source information.
 @dataclass
 class RetrievedChunk:
     chunk_id: uuid.UUID
@@ -23,15 +29,24 @@ class RetrievedChunk:
     asset_path: str | None = None
 
 
+# performs vector search to find the most relevant document chunks for a user's question.
+# we use cosine distance to find cosine similarity score
+# because postgresql with pgvector extension doesnt have built in cosine similarity operation
 def retrieve(
     db: Session,
     user_id: uuid.UUID,
     question: str,
     top_k: int = 5,
 ) -> list[RetrievedChunk]:
-    query_vec = embed_query(question)
-    distance = Chunk.embedding.cosine_distance(query_vec)
+    query_vec = embed_query(question) # Convert the question into an embedding
 
+    # measures how far each chunk’s vector is from the question’s vector. 
+    # A smaller distance means a closer meaning.
+    # Cosine distance ranges from 0 to 2.
+    distance = Chunk.embedding.cosine_distance(query_vec) 
+
+    # This query asks the database for the (top_k chunks) whose meaning is closest to the question,
+    # but only from this user’s documents that are finished processing.
     rows = db.execute(
         select(Chunk, Document.filename, distance.label("distance"))
         .join(Document, Document.id == Chunk.document_id)
@@ -40,6 +55,7 @@ def retrieve(
         .limit(top_k)
     ).all()
 
+    # Convert the results into RetrievedChunk objects and return
     return [
         RetrievedChunk(
             chunk_id=c.id,
@@ -47,7 +63,7 @@ def retrieve(
             filename=filename,
             page=c.page,
             content=c.content,
-            score=1 - dist,
+            score=1 - dist, # cosine similarity score [-1,1]
             kind=c.kind,
             asset_path=c.asset_path,
             vector_score=1 - dist,
@@ -55,7 +71,8 @@ def retrieve(
         for c, filename, dist in rows
     ]
 
-
+# finds document chunks that contain words related to the user's question
+# we are using Postgres full-text search with ts_rank for keyword search
 def keyword_search(
     db: Session,
     user_id: uuid.UUID,
@@ -97,6 +114,7 @@ def keyword_search(
     ]
 
 
+# hybrid_retrieve runs both searches (vector and keyword) and merges their results into one final top-5 list.
 def hybrid_retrieve(
     db: Session,
     user_id: uuid.UUID,
@@ -137,22 +155,27 @@ WHOLE_DOCUMENT_HINTS = (
     "whole document",
 )
 
-
+# If user question needs whole document to answer then return true or else false
 def wants_whole_document(text: str) -> bool:
     lowered = text.lower()
     return any(hint in lowered for hint in WHOLE_DOCUMENT_HINTS)
 
 
+# identifies which uploaded document the user is referring to
+# by checking whether its filename appears in their question.
 def find_mentioned_document(
     db: Session, user_id: uuid.UUID, text: str
 ) -> Document | None:
     lowered = text.lower()
-    best: Document | None = None
+    best: Document | None = None  # best stores the document that matches the question.
     best_len = 0
 
+    # This retrieves all ready documents belonging to the current user.
     docs = db.scalars(
         select(Document).where(Document.user_id == user_id, Document.status == "ready")
     ).all()
+
+    # Check whether the filename appears in the question
     for d in docs:
         name = d.filename.lower()
         stem = name.rsplit(".", 1)[0]
@@ -161,9 +184,12 @@ def find_mentioned_document(
     return best
 
 
+# It fetches all the chunks of one document. It returns None if the document is empty or too big to send whole.
+# This function is used when the question is about the whole document
 def get_document_chunks(
     db: Session, user_id: uuid.UUID, document_id: uuid.UUID, max_chunks: int
 ) -> list[RetrievedChunk] | None:
+
     rows = db.execute(
         select(Chunk, Document.filename)
         .join(Document, Document.id == Chunk.document_id)
@@ -186,7 +212,7 @@ def get_document_chunks(
             filename=filename,
             page=c.page,
             content=c.content,
-            score=1.0,
+            score=1.0, # we assign 1.0 because we actually not calculating relevance score, we need all chunks, so its just a placeholder
             kind=c.kind,
             asset_path=c.asset_path,
         )

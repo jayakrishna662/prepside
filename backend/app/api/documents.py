@@ -111,6 +111,7 @@ def upload_document(
 
 
 
+# fetches all documents belonging to the logged-in user from the database and returns them
 @router.get("", response_model=list[DocumentOut])
 def list_documents(
     db: Session = Depends(get_db),
@@ -123,6 +124,7 @@ def list_documents(
     ).all()
 
 
+# fetches a specific document details from db like filename, status, page count, progress and so on.
 @router.get("/{document_id}", response_model=DocumentOut)
 def get_document(
     document_id: uuid.UUID,
@@ -142,12 +144,15 @@ def get_document(
 ACTIVE_STATUSES = ("uploaded", "parsing", "chunking", "describing", "embedding", "storing")
 
 
+# deletes a document and its associated chunks,embeddings, Page images on disk
 @router.delete("/{document_id}", status_code=204)
 def delete_document(
     document_id: uuid.UUID,
     db: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ):
+    # i) Delete document record in the db first
+    # Find the document by ID and owner
     doc = db.scalar(
         select(Document).where(
             Document.id == document_id, Document.user_id == user_id
@@ -155,20 +160,31 @@ def delete_document(
     )
     if doc is None:
         raise HTTPException(404, "Document not found")
+
+    # If the doc is still being processed in the background,
+    #  deleting it would break that work, so the backend refuses with 409 Conflict.
     if doc.status in ACTIVE_STATUSES:
         raise HTTPException(409, "Document is still processing. Try again when it finishes.")
 
+    # Find associated asset files, Some document chunks may have associated files, 
+    # such as extracted images. This query retrieves the paths of those files.
     asset_paths = db.scalars(
         select(Chunk.asset_path)
         .where(Chunk.document_id == doc.id, Chunk.asset_path.is_not(None))
         .distinct()
     ).all()
 
+    # Save the documents’s path in a variable first, because doc won’t be usable after the delete.
     storage_path = doc.storage_path
-    db.delete(doc)
-    db.commit()
+    db.delete(doc) # marks the document record for deletion.
+    db.commit() # commits the database transaction.
 
+    # ii) Delete documents & its assets from local storage 
+    # retrieve the storage path of the document, 
+    # because we also need to delete the PDF and its associated files from local storage.
     storage = get_storage()
+
+    # This loop retreives all associated assets and deletes them
     for path in [storage_path, *asset_paths]:
         try:
             storage.delete(path)
@@ -176,12 +192,14 @@ def delete_document(
             logger.warning("Could not delete file %s", path, exc_info=True)
 
 
+# allows a user to view an uploaded PDF in their browser.
 @router.get("/{document_id}/file")
 def view_document_file(
     document_id: uuid.UUID,
     db: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ):
+    # Find the document by ID and owner
     doc = db.scalar(
         select(Document).where(
             Document.id == document_id, Document.user_id == user_id
@@ -189,22 +207,30 @@ def view_document_file(
     )
     if doc is None:
         raise HTTPException(404, "Document not found")
-
+    
+    # Read the document from storage
     try:
         data = get_storage().download(doc.storage_path)
     except FileNotFoundError:
         raise HTTPException(404, "File not found")
 
+    # Return the PDF to the browser
     return Response(
-        content=data,
-        media_type="application/pdf",
+        content=data, # The PDF bytes
+        media_type="application/pdf", # Tells the browser “this is a PDF”, so it opens its built-in PDF viewer
         headers={
+            # Content-Disposition": f"inline -> Tells the browser to display the PDF inside the browser 
+            # filename*=UTF-8''{quote(doc.filename)} -> Provides the original filename 
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(doc.filename)}",
+
+            # It tells the browser “trust the type I gave you, don’t guess”. 
+            # Without it, a browser could guess a file is something else (like HTML) and run it.
             "X-Content-Type-Options": "nosniff",
         },
     )
 
 
+# Retrieves an image associated with a specific document page and displays it to the user.
 @router.get("/{document_id}/pages/{page}/image")
 def view_page_image(
     document_id: uuid.UUID,
@@ -212,6 +238,7 @@ def view_page_image(
     db: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_current_user_id),
 ):
+    # The backend searches the chunks table for an image path
     path = db.scalar(
         select(Chunk.asset_path)
         .where(
@@ -225,16 +252,22 @@ def view_page_image(
     if path is None:
         raise HTTPException(404, "Page picture not found")
 
+    # Read the image from storage
     try:
         data = get_storage().download(path)
     except FileNotFoundError:
         raise HTTPException(404, "Page picture not found")
 
+    # Return the image to the browser
     return Response(
         content=data,
-        media_type="image/png",
+        media_type="image/png", # Tells the browser that the response is a PNG image.
         headers={
+            # Prevents the browser from guessing a different content type.
             "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "private, max-age=3600",
+
+            # Allows a private browser cache to reuse the response for up to 3,600 seconds,
+            #  or one hour, without necessarily requesting it again.
+            "Cache-Control": "private, max-age=3600", 
         },
     )

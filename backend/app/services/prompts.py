@@ -18,7 +18,8 @@ Rules:
 - Explain in clear, simple language suitable for a student.
 """
 
-
+# Takes the retrieved document chunks and formats them with source IDs, filenames, page numbers, 
+# and content so the LLM can identify where the information came from.
 def build_context(chunks: list[RetrievedChunk]) -> str:
     blocks = []
     for i, c in enumerate(chunks, start=1):
@@ -28,7 +29,8 @@ def build_context(chunks: list[RetrievedChunk]) -> str:
         )
     return "\n\n".join(blocks)
 
-
+# Combines the formatted sources, the question rewritten for retrieval,
+#  and the student's original message into one prompt.
 def build_user_prompt(
     question: str,
     chunks: list[RetrievedChunk],
