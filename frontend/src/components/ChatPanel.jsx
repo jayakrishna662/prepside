@@ -18,62 +18,73 @@ export default function ChatPanel({ conversationId, onConversationChange , onAns
   const activeRef = useRef(conversationId);
   const justCreated = useRef(null);
 
+  const sendingRef = useRef(false);
+  const loadToken = useRef(0);
+
   useEffect(() => {
-    activeRef.current = conversationId;
-    if (!conversationId) {
-      return;
-    }
-    // A chat we just created has nothing to load yet
-    if (justCreated.current === conversationId) {
-      justCreated.current = null;
-      return;
-    }
-    getMessages(conversationId)
-      .then(setMessages)
-      .catch((e) => setError(e.message));
-  }, [conversationId]);
+  activeRef.current = conversationId;
+  if (!conversationId) return;
+
+  if (justCreated.current === conversationId) {
+    justCreated.current = null;
+    return;
+  }
+  if (sendingRef.current) return; // no history load while sending
+
+  const token = loadToken.current;
+  getMessages(conversationId)
+    .then((data) => {
+      if (activeRef.current === conversationId && loadToken.current === token) {
+        setMessages(data);
+      }
+    })
+    .catch((e) => setError(e.message));
+}, [conversationId]);
 
  useEffect(() => {
   if (!conversationId || (messages.length === 0 && !sending)) return;
   bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 }, [conversationId, messages, sending]);
 
-  
+
   async function send() {
-    const question = input.trim();
-    if (!question || sending) return;
+  const question = input.trim();
+  if (!question || sending) return;
 
-    setError("");
-    setSending(true);
-    setInput("");
-    setMessages((m) => [
-      ...m,
-      { id: `tmp-${Date.now()}`, role: "user", content: question },
-    ]);
+  setError("");
+  setSending(true);
+  sendingRef.current = true;   // NEW
+  loadToken.current++;         // NEW
+  setInput("");
+  setMessages((m) => [
+    ...m,
+    { id: `tmp-${Date.now()}`, role: "user", content: question },
+  ]);
 
-    try {
-      let id = conversationId;
-      if (!id) {
-        const conv = await createConversation();
-        id = conv.id;
-        justCreated.current = id;
-        activeRef.current = id;
-        onConversationChange(id);
-      }
-      
-      const reply = await askQuestion(id, question);
-      if (activeRef.current === id) {
-        setMessages((m) => [...m, reply]);
-      }
-      onAnswered?.();
-    } catch (e) {
-      setError(e.message);
-      setInput(question);
-      setMessages((m) => m.slice(0, -1));
-    } finally {
-      setSending(false);
+  try {
+    let id = conversationId;
+    if (!id) {
+      const conv = await createConversation();
+      id = conv.id;
+      justCreated.current = id;
+      activeRef.current = id;
+      onConversationChange(id);
     }
+
+    const reply = await askQuestion(id, question);
+    if (activeRef.current === id) {
+      setMessages((m) => [...m, reply]);
+    }
+    onAnswered?.();
+  } catch (e) {
+    setError(e.message);
+    setInput(question);
+    setMessages((m) => m.slice(0, -1));
+  } finally {
+    setSending(false);
+    sendingRef.current = false;   // NEW
   }
+}
 
   return (
     <div className="chat">

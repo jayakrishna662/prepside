@@ -24,6 +24,8 @@ export default function App() {
   // null means no conversation is currently selected.
   const [activeConversation, setActiveConversation] = useState(null);
 
+  const [chatKey, setChatKey] = useState(0);
+
   // Create a function to fetch the latest document list from the backend.
   const refresh = useCallback(() => {
     listDocuments()  // returns the list of documents along with their details, including their current processing status. (this function is defined in src/api.js)
@@ -56,6 +58,14 @@ export default function App() {
     return () => clearInterval(timer);  // Stop polling when the effect is cleaned up
   }, [hasActive, refresh]);
 
+
+    // Used when the USER switches chats. Resets ChatPanel.
+    function selectConversation(id) {
+      setActiveConversation(id);
+      setChatKey((k) => k + 1);
+    }
+
+
   // this function handles deleting a document 
   async function handleDelete(id) {
     setError(""); // Clear any previous error message that occurred due to previous request fails
@@ -73,7 +83,7 @@ export default function App() {
     setError("");  // Clear any previous error message
     try {
       await deleteConversation(id); // Ask the backend to delete the conversation
-      if (id === activeConversation) setActiveConversation(null); // If the deleted conversation is currently open, it 
+      if (id === activeConversation) selectConversation(null); // If the deleted conversation is currently open, it 
       // clears the selection.
       refreshConversations(); // Fetch the updated conversation list
     } catch (e) {
@@ -89,9 +99,9 @@ export default function App() {
       <ChatList
         conversations={conversations} // Displays the list of conversations.
         activeId={activeConversation} // Tells ChatList which conversation is currently selected.
-        onSelect={setActiveConversation} // Runs when you select a conversation and updates the active conversation.
+        onSelect={selectConversation} // Runs when you select a conversation and updates the active conversation.
         onDelete={handleDeleteConversation} // Runs when you click delete and handles deleting that conversation.
-        onNew={() => setActiveConversation(null)} // Clears the current selection to start a new chat.
+        onNew={() => selectConversation(null)} // Clears the current selection to start a new chat.
       />
 
       <main className="main">
@@ -106,7 +116,7 @@ export default function App() {
 
         <h2>Ask your documents</h2>
         <ChatPanel
-          key={activeConversation ?? "new"} // Resets ChatPanel when you switch to another chat.so messages and errors from Chat A don't remain in Chat B.
+          key={chatKey} // Resets ChatPanel when you switch to another chat.so messages and errors from Chat A don't remain in Chat B.
           conversationId={activeConversation} // Tells ChatPanel which conversation is currently selected.
           onConversationChange={setActiveConversation} // Updates the selected chat.
           onAnswered={refreshConversations} // Refreshes the conversation list after an answer is received, so the sidebar can show updated information.
