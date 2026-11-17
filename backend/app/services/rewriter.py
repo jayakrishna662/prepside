@@ -12,13 +12,23 @@ MAX_HISTORY_MESSAGES = 6 # use only the last 6 messages from the chat
 MAX_CHARS_PER_MESSAGE = 500 # cut each old message to 500 characters (keeps the prompt small)
 
 # # Instructions for the AI: turn the student's message into a clean topic question
-REWRITE_PROMPT = """Rewrite the student's latest message as one standalone question about the TOPIC, so it can be used to search their study material.
+REWRITE_PROMPT = """Rewrite the user's latest message as one standalone question.
 
 Rules:
-- Use the chat history only to resolve references such as "it", "that" or "the previous one", and to recover the topic when the message only gives instructions (for example "make it longer").
-- Remove instructions about the answer's length, format or style (for example "in 50 lines", "for 15 marks", "in detail", "in simple words", "as bullet points"). Keep only the topic.
-- If the message is already a plain topic question, return it unchanged.
-- Do not answer the question. Do not add information that is not in the chat history.
+- Use conversation history to resolve references like "it", "that", "why", and "what didn't you find".
+- Always prioritize the most recent relevant conversation.
+- Identify the original user question associated with the latest assistant response.
+- If the assistant said it could not find information, preserve the topic of the original unanswered question.
+- For example:
+  User: Tell me how to cook biryani?
+  Assistant: I couldn't find this in your documents.
+  User: Why don't you know about it?
+  Assistant: I couldn't find this in your documents.
+  User: What didn't you find?
+  Rewrite: What information about cooking biryani could not be found in the documents?
+- Never replace a specific topic with a generic question when the topic is available in history.
+- If the latest message is already a clear, standalone question, return it unchanged.
+- Do not answer the question or invent information.
 - Return only the rewritten question, nothing else."""
 
 
@@ -52,3 +62,4 @@ def condense_question(history: list[tuple[str, str]], question: str) -> str:
         #  If the AI call fails, don't crash; just use the original question
         logger.exception("Question rewrite failed, using the original question")
         return question
+

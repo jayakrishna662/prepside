@@ -161,6 +161,8 @@ def answer_question(
         .invoke([SystemMessage(content=SYSTEM_PROMPT), _build_message(prompt_text, images)])
     )
 
+    logger.info("LLM structured result: %s", result)
+    
     # Check 2: the LLM itself says the sources don't contain the answer
     if result is None or not result.found:
         return _finish(question, _not_found(top_score, "llm_not_found", mode, len(images)))
