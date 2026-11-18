@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -11,48 +12,12 @@ from app.services.rag import NOT_FOUND_MESSAGE, answer_question
 from app.services.rewriter import (
     MAX_CHARS_PER_MESSAGE,
     MAX_HISTORY_MESSAGES,
-    condense_question,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# Classifies the user's intent using the conversation history.
-INTENT_PROMPT = """
-You are an intent classifier for an enterprise knowledge assistant.
 
-Classify the user's latest message using the conversation history.
-
-Return exactly one label:
-
-NEW_QUESTION:
-The user asks a new question that should be answered using
-the uploaded documents.
-
-FOLLOW_UP:
-The user wants more details or clarification about a previous
-document-related answer.
-
-SEARCH_CLARIFICATION:
-The user asks what information could not be found, why a search
-failed, or asks about a previous unsuccessful document search.
-
-SCOPE_QUESTION:
-The user asks why the assistant cannot answer using general knowledge,
-asks about the assistant's limitations, or explicitly requests an
-answer independently of the uploaded documents.
-
-Rules:
-- Use conversation history to understand the user's meaning.
-- Prioritize the most recent relevant exchange.
-- Short messages can be follow-ups.
-- A question that sounds general may still be answerable from documents.
-- Do not classify a question as SCOPE_QUESTION merely because it
-  mentions a general topic such as AWS.
-- Questions referring to a previous failed search are SEARCH_CLARIFICATION.
-- Do not answer the question.
-- Return only the label.
-"""
 
 
 SCOPE_MESSAGE = (
@@ -86,50 +51,95 @@ def format_transcript(history: list[tuple[str, str]]) -> str:
     )
 
 
-def classify_intent(
-    history: list[tuple[str, str]],
-    question: str,
-) -> str:
-    """Classify the latest message using the conversation context."""
+ANALYZE_PROMPT = """
+You analyze the user's latest message in a conversation with a
+document-based enterprise knowledge assistant. Do two things.
 
-    transcript = format_transcript(history)
+1. Classify the intent with exactly one label:
 
-    prompt = f"""
-Conversation history:
-{transcript or "(No previous messages)"}
+NEW_QUESTION: A new question to answer using the uploaded documents.
+FOLLOW_UP: The user wants more details or clarification about a previous
+document-related answer.
+SEARCH_CLARIFICATION: The user asks what could not be found, why a search
+failed, or asks about a previous unsuccessful document search.
+SCOPE_QUESTION: The user asks why the assistant cannot answer using general
+knowledge, asks about its limitations, or asks for an answer independent of
+the uploaded documents.
 
-Latest user message:
-{question}
+Intent rules:
+- Use the conversation history to understand the user's meaning.
+- Prioritize the most recent relevant exchange.
+- Short messages can be follow-ups.
+- A question that sounds general may still be answerable from documents.
+- Do not use SCOPE_QUESTION merely because a general topic like AWS is mentioned.
+- Questions about a previous failed search are SEARCH_CLARIFICATION.
+
+2. Rewrite the latest message as one standalone question.
+
+Rewrite rules:
+- Use the history to resolve words like "it", "that", "why" and "what didn't you find".
+- If the latest message is already clear and standalone, return it unchanged.
+- If the assistant could not find information, keep the topic of the original
+  unanswered question. Example: after "Tell me how to cook biryani?" and a
+  not-found reply, "What didn't you find?" becomes
+  "What information about cooking biryani could not be found in the documents?"
+- Never replace a specific topic with a generic question.
+
+Do not answer the question or invent information.
 """
 
-    allowed_intents = {
-        "NEW_QUESTION",
-        "FOLLOW_UP",
-        "SEARCH_CLARIFICATION",
-        "SCOPE_QUESTION",
-    }
+ALLOWED_INTENTS = {
+    "NEW_QUESTION",
+    "FOLLOW_UP",
+    "SEARCH_CLARIFICATION",
+    "SCOPE_QUESTION",
+}
+
+
+class MessageAnalysis(BaseModel):
+    intent: str
+    standalone_question: str
+
+
+def analyze_message(
+    history: list[tuple[str, str]],
+    question: str,
+) -> tuple[str, str]:
+    """One Gemini call that returns (intent, standalone question)."""
+
+    # First message of a chat: nothing to analyze, no call needed.
+    if not history:
+        return "NEW_QUESTION", question
+
+    prompt = (
+        f"Conversation history:\n{format_transcript(history)}\n\n"
+        f"Latest user message:\n{question}"
+    )
 
     try:
-        response = get_llm().invoke(
-            [
-                SystemMessage(content=INTENT_PROMPT),
-                HumanMessage(content=prompt),
-            ]
+        result = (
+            get_llm()
+            .with_structured_output(MessageAnalysis)
+            .invoke(
+                [
+                    SystemMessage(content=ANALYZE_PROMPT),
+                    HumanMessage(content=prompt),
+                ]
+            )
         )
 
-        intent = message_text(response).strip().upper()
-
-        if intent in allowed_intents:
-            return intent
-
-        logger.warning("Unexpected intent label: %s", intent)
+        if result is not None:
+            intent = result.intent.strip().upper()
+            standalone = result.standalone_question.strip() or question
+            if intent in ALLOWED_INTENTS:
+                return intent, standalone
+            logger.warning("Unexpected intent label: %s", intent)
 
     except Exception:
-        logger.exception("Intent classification failed")
+        logger.exception("Message analysis failed")
 
-    # If classification fails, attempt document retrieval instead
-    # of prematurely rejecting the user's question.
-    return "NEW_QUESTION"
+    # If anything fails, search the documents with the original question.
+    return "NEW_QUESTION", question
 
 
 def get_failed_question(
@@ -253,8 +263,6 @@ def citations_to_dicts(citations) -> list[dict]:
 
 
 
-
-
 def ask(
     db: Session,
     user_id: uuid.UUID,
@@ -267,10 +275,12 @@ def ask(
     history = get_history(db, conversation.id)
 
     # Step 2: Classify the user's intent.
-    intent = classify_intent(history, question) if history else "NEW_QUESTION"
+    intent, standalone = analyze_message(history, question)
     logger.info("Detected intent: %s", intent)
+    logger.info("Original question: %s", question)
+    logger.info("Rewritten question: %s", standalone)
 
-        # Step 3: A "clarification" needs a failed search to explain.
+    # Step 3: A "clarification" needs a failed search to explain.
     # If there isn't one, treat the message as a normal question.
     failed_question = None
     if intent == "SEARCH_CLARIFICATION":
@@ -289,12 +299,6 @@ def ask(
         found = False
         citations = []
     else:
-        # NEW_QUESTION, FOLLOW_UP and SCOPE_QUESTION all search the documents first.
-        standalone = condense_question(history, question)
-
-        logger.info("Original question: %s", question)
-        logger.info("Rewritten question: %s", standalone)
-
         answer = answer_question(
             db,
             user_id,
