@@ -1,65 +1,113 @@
-# rewriter.py file converts a user's latest message into a standalone question
-# using the previous chat history, so the RAG system can search the documents with a clear question.
+# rewriter.py understands the user's latest message using the chat history.
+# One Gemini call returns two things:
+#   1. the intent (new question, follow-up, search clarification, scope question)
+#   2. the message rewritten as a standalone question for document search
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import BaseModel
 
-from app.services.llm import get_llm, message_text
+from app.services.llm import get_llm
 
 logger = logging.getLogger(__name__)
 
-MAX_HISTORY_MESSAGES = 6 # use only the last 6 messages from the chat
-MAX_CHARS_PER_MESSAGE = 500 # cut each old message to 500 characters (keeps the prompt small)
+# How much chat history is sent to the AI.
+MAX_HISTORY_MESSAGES = 6      # use only the last 6 messages of the chat
+MAX_CHARS_PER_MESSAGE = 500   # cut each old message to 500 characters
 
-# # Instructions for the AI: turn the student's message into a clean topic question
-REWRITE_PROMPT = """Rewrite the user's latest message as one standalone question.
+ANALYZE_PROMPT = """
+You analyze the user's latest message in a conversation with a
+document-based enterprise knowledge assistant. Do two things.
 
-Rules:
-- Use conversation history to resolve references like "it", "that", "why", and "what didn't you find".
-- Always prioritize the most recent relevant conversation.
-- Identify the original user question associated with the latest assistant response.
-- If the assistant said it could not find information, preserve the topic of the original unanswered question.
-- For example:
-  User: Tell me how to cook biryani?
-  Assistant: I couldn't find this in your documents.
-  User: Why don't you know about it?
-  Assistant: I couldn't find this in your documents.
-  User: What didn't you find?
-  Rewrite: What information about cooking biryani could not be found in the documents?
-- Never replace a specific topic with a generic question when the topic is available in history.
-- If the latest message is already a clear, standalone question, return it unchanged.
-- Do not answer the question or invent information.
-- Return only the rewritten question, nothing else."""
+1. Classify the intent with exactly one label:
+
+NEW_QUESTION: A new question to answer using the uploaded documents.
+FOLLOW_UP: The user wants more details or clarification about a previous
+document-related answer.
+SEARCH_CLARIFICATION: The user asks what could not be found, why a search
+failed, or asks about a previous unsuccessful document search.
+SCOPE_QUESTION: The user asks why the assistant cannot answer using general
+knowledge, asks about its limitations, or asks for an answer independent of
+the uploaded documents.
+
+Intent rules:
+- Use the conversation history to understand the user's meaning.
+- Prioritize the most recent relevant exchange.
+- Short messages can be follow-ups.
+- A question that sounds general may still be answerable from documents.
+- Do not use SCOPE_QUESTION merely because a general topic like AWS is mentioned.
+- Questions about a previous failed search are SEARCH_CLARIFICATION.
+
+2. Rewrite the latest message as one standalone question.
+
+Rewrite rules:
+- Use the history to resolve words like "it", "that", "why" and "what didn't you find".
+- If the latest message is already clear and standalone, return it unchanged.
+- If the assistant could not find information, keep the topic of the original
+  unanswered question. Example: after "Tell me how to cook biryani?" and a
+  not-found reply, "What didn't you find?" becomes
+  "What information about cooking biryani could not be found in the documents?"
+- Never replace a specific topic with a generic question.
+
+Do not answer the question or invent information.
+"""
+
+ALLOWED_INTENTS = {
+    "NEW_QUESTION",
+    "FOLLOW_UP",
+    "SEARCH_CLARIFICATION",
+    "SCOPE_QUESTION",
+}
 
 
-def condense_question(history: list[tuple[str, str]], question: str) -> str:
-    """history is a list of (role, content) pairs, oldest first."""
+class MessageAnalysis(BaseModel):
+    intent: str
+    standalone_question: str
 
-    # If its First message of the chat: use the original question.
-    if not history:
-        return question
 
-    # Take only the last few messages
-    recent = history[-MAX_HISTORY_MESSAGES:]
-
-    # Combine the previous messages(which contains messages with the roles) into a readable conversation transcript.
-    # Limit each message to avoid sending too much text to the LLM.
-    transcript = "\n".join(
-        f"{role}: {content[:MAX_CHARS_PER_MESSAGE]}" for role, content in recent
+def format_transcript(history: list[tuple[str, str]]) -> str:
+    """Turn history into short, readable lines: 'role: text'."""
+    return "\n".join(
+        f"{role}: {content[:MAX_CHARS_PER_MESSAGE]}" for role, content in history
     )
 
-    # Combine the chat history and the new message into one prompt
-    prompt = f"Chat history:\n{transcript}\n\nLatest message: {question}"
+
+def analyze_message(
+    history: list[tuple[str, str]],
+    question: str,
+) -> tuple[str, str]:
+    """One Gemini call that returns (intent, standalone question)."""
+
+    # First message of a chat: nothing to analyze, no call needed.
+    if not history:
+        return "NEW_QUESTION", question
+
+    prompt = (
+        f"Conversation history:\n{format_transcript(history)}\n\n"
+        f"Latest user message:\n{question}"
+    )
 
     try:
-        # Ask the AI to rewrite the question
-        reply = get_llm().invoke(
-            [SystemMessage(content=REWRITE_PROMPT), HumanMessage(content=prompt)]
+        result = (
+            get_llm()
+            .with_structured_output(MessageAnalysis)
+            .invoke(
+                [
+                    SystemMessage(content=ANALYZE_PROMPT),
+                    HumanMessage(content=prompt),
+                ]
+            )
         )
-        rewritten = message_text(reply).strip() #  if the AI returns empty text, use the original
-        return rewritten or question
-    except Exception:
-        #  If the AI call fails, don't crash; just use the original question
-        logger.exception("Question rewrite failed, using the original question")
-        return question
 
+        if result is not None:
+            intent = result.intent.strip().upper()
+            standalone = result.standalone_question.strip() or question
+            if intent in ALLOWED_INTENTS:
+                return intent, standalone
+            logger.warning("Unexpected intent label: %s", intent)
+
+    except Exception:
+        logger.exception("Message analysis failed")
+
+    # If anything fails, search the documents with the original question.
+    return "NEW_QUESTION", question
