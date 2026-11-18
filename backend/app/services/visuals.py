@@ -1,12 +1,15 @@
-# The visuals.py file identifies PDF pages that may contain charts, diagrams, or other visuals, 
+# The visuals.py file identifies PDF pages that may contain images,
 # then converts selected pages into PNG images
 #  so the application can analyze their visual content using Gemini.
+from collections import Counter
 from dataclasses import dataclass
 
 import pymupdf
 
-MIN_DRAWINGS = 10  # Sets the minimum number of drawings a page should contain to be considered meaningful visual
-MIN_IMAGE_SIZE = 50  # points; smaller images (logos, icons) are ignored
+MIN_IMAGE_SIZE = 100  # points; smaller images (logos, icons) are ignored
+MIN_PAGE_SHARE = 0.03  # an image must cover at least 3% of the page to be meaningful
+MAX_PAGE_SHARE = 0.85  # an image bigger than this is probably a scanned page, skipped for now
+LOGO_REPEAT = 0.3  # an image that appears on more than 30% of pages is a logo or watermark
 
 
 # Holds the details of one page that has visuals
@@ -14,26 +17,62 @@ MIN_IMAGE_SIZE = 50  # points; smaller images (logos, icons) are ignored
 class VisualPage:
     page: int
     images: int
-    drawings: int
+    score: float  # how much of the page the images cover, used to pick the best pages
 
-# identifies pages that contain sufficiently large images or many drawings.
+
+# identifies pages that contain sufficiently large images.
 def find_visual_pages(data: bytes) -> list[VisualPage]:
+    # if the file is broken, there is nothing to process
+    try:
+        doc = pymupdf.open(stream=data, filetype="pdf")
+    except Exception:
+        return []
+
     pages: list[VisualPage] = []
 
-    with pymupdf.open(stream=data, filetype="pdf") as doc:
+    with doc:
+        # password-protected files cannot be read
+        if doc.needs_pass:
+            return []
+
+        total = len(doc)
+
+        # count on how many pages each image appears
+        counts = Counter()
+        for page in doc:
+            for xref in {img[0] for img in page.get_images(full=True)}:
+                counts[xref] += 1
+
+        # images repeated on many pages are logos or watermarks, so we ignore them
+        logos = {x for x, n in counts.items() if total >= 4 and n / total > LOGO_REPEAT}
+
         for number, page in enumerate(doc, start=1):
+            page_area = page.rect.width * page.rect.height
             images = 0
-            for info in page.get_image_info():
+            score = 0.0
+
+            for info in page.get_image_info(xrefs=True):
+                if info["xref"] in logos:
+                    continue
+
                 x0, y0, x1, y1 = info["bbox"]
-                if (x1 - x0) >= MIN_IMAGE_SIZE and (y1 - y0) >= MIN_IMAGE_SIZE:
-                    images += 1
+                width, height = x1 - x0, y1 - y0
 
-            drawings = len(page.get_drawings())
+                # skip small images (icons, bullets)
+                if width < MIN_IMAGE_SIZE or height < MIN_IMAGE_SIZE:
+                    continue
 
-            # if a page contains images or 
-            # If a page contains >= MIN_DRAWINGS, it qualifies for further visual processing.
-            if images > 0 or drawings >= MIN_DRAWINGS:
-                pages.append(VisualPage(number, images, drawings))
+                # skip images that are too small or too big compared to the page
+                share = (width * height) / page_area
+                if share < MIN_PAGE_SHARE or share > MAX_PAGE_SHARE:
+                    continue
+
+                images += 1
+                score += share
+
+            # if a page contains at least one meaningful image, it qualifies for further visual processing.
+            if images > 0:
+                pages.append(VisualPage(number, images, score))
 
     return pages
 
