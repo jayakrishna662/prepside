@@ -5,7 +5,7 @@
 import base64
 import logging
 import time
-from typing import Callable
+from typing import Callable  # noqa: UP035
 
 from langchain_core.messages import HumanMessage
 
