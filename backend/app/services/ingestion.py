@@ -8,7 +8,8 @@ from app.db.models import Chunk, Document
 from app.db.session import SessionLocal
 from app.services.chunker import chunk_pages
 from app.services.embedder import embed_texts
-from app.services.parser import parse_pdf
+from app.services.ocr import ocr_pages
+from app.services.parser import find_scanned_pages, parse_pdf
 from app.services.storage import get_storage
 from app.services.vision import build_visual_chunks
 
@@ -38,10 +39,22 @@ def ingest_document(document_id: uuid.UUID) -> None:
             # Step 1: Download the file from storage
             data = get_storage().download(doc.storage_path)
 
-             # Step 2: Read the pages and text from the file
+                          # Step 2: Read the pages and text from the file
             _set_status(db, doc, "parsing")
             pages, page_count = parse_pdf(data)
             doc.page_count = page_count
+
+            # Scanned pages have no real text, so the llm reads them from the picture
+            scanned = find_scanned_pages(data)
+            if scanned:
+                by_page = {p.page: p for p in pages}
+                for p in ocr_pages(data, scanned):
+                    by_page[p.page] = p
+                pages = [by_page[n] for n in sorted(by_page)]
+
+            # If there is still no text, the document cannot be searched
+            if not pages:
+                raise ValueError("No readable text found (the PDF may be scanned images)")
 
             # Step 3: Split the text into small chunks
             _set_status(db, doc, "chunking")
