@@ -44,13 +44,17 @@ def ingest_document(document_id: uuid.UUID) -> None:
             pages, page_count = parse_pdf(data)
             doc.page_count = page_count
 
-            # Scanned pages have no real text, so the llm reads them from the picture
+            # Scanned pages have no real text, so the llm reads them from the picture.
+            # It also describes any photo or diagram on those pages.
             scanned = find_scanned_pages(data)
+            scanned_visuals = []
             if scanned:
+                result = ocr_pages(data, scanned, doc.user_id, doc.id)
                 by_page = {p.page: p for p in pages}
-                for p in ocr_pages(data, scanned):
+                for p in result.pages:
                     by_page[p.page] = p
                 pages = [by_page[n] for n in sorted(by_page)]
+                scanned_visuals = result.visuals
 
             # If there is still no text, the document cannot be searched
             if not pages:
@@ -72,6 +76,11 @@ def ingest_document(document_id: uuid.UUID) -> None:
             visual_chunks = build_visual_chunks(
                 data, doc.user_id, doc.id, on_progress=on_visual_progress
             )
+            
+            # Scanned pages were already handled in Step 2, so we drop them here to avoid duplicates,
+            # then add the photos found on the scanned pages.
+            visual_chunks = [v for v in visual_chunks if v.page not in scanned]
+            visual_chunks += scanned_visuals
 
             # Step 5: Put text chunks and visual chunks into one list
             # Each row: (chunk_index, page, content, kind, asset_path)
